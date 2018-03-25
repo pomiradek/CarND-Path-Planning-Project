@@ -17,16 +17,25 @@ using namespace std;
 using json = nlohmann::json;
 
 const double sampling_N = 0.02;
+const int number_of_steps = 50;
+const double safe_front_distance = 30;
+const double safe_back_distance = 10;
+const double max_accel = .42;
 
 int lane = 1;
+int from_lane = 1;
+int to_lane = 1;
 
 // KL, PLCR/PLCL, LCR/LCL
 string current_state = "KL";
 
 map<int, vector<vector<double>>> lanes;
+int remaining_maneuver_steps = 0;
 
 // have a reference velocity to target
 double ref_vel = 0.0; // mph
+double max_speed = 49.5;
+double target_speed = max_speed;
 
 // For converting back and forth between radians and degrees.
 constexpr double pi() { return M_PI; }
@@ -182,34 +191,60 @@ int checkLaneChange() {
         case 0:
             // check right lane
             for (int k = 0; k < lanes[1].size(); k++) {
-                if (lanes[1][k][8] < 20 && lanes[1][k][8] > -10) {
+                if (lanes[1][k][8] < safe_front_distance && lanes[1][k][8] > -safe_back_distance) {
                     return lane;
                 }
             }
             return 1;
         case 1:
-            bool is_right_lane_free = true;
+            bool is_right_lane_free;
+            bool is_left_lane_free;
+            is_right_lane_free = true;
+            is_left_lane_free = true;
+            double right_min_s;
+            double left_min_s;
+            right_min_s = 1000;
+            left_min_s = 1000;
             // check right lane
             for (int k = 0; k < lanes[2].size(); k++) {
-                if (lanes[2][k][8] < 20 && lanes[2][k][8] > -10) {
+                if (lanes[2][k][8] < safe_front_distance && lanes[2][k][8] > -safe_back_distance) {
                     is_right_lane_free = false;
                 }
-            }
-            if (!is_right_lane_free) {
-                // check left lane
-                for (int k = 0; k < lanes[0].size(); k++) {
-                    if (lanes[0][k][8] < 20 && lanes[0][k][8] > -10) {
-                        return lane;
-                    }
+                if (lanes[2][k][8] >= safe_front_distance && lanes[2][k][8] < right_min_s) {
+                    right_min_s = lanes[2][k][8];
                 }
-                return 0;
+            }
+            // check left lane
+            for (int k = 0; k < lanes[0].size(); k++) {
+                if (lanes[0][k][8] < safe_front_distance && lanes[0][k][8] > -safe_back_distance) {
+                    is_left_lane_free = false;
+                }
+                if (lanes[0][k][8] >= safe_front_distance && lanes[0][k][8] < left_min_s) {
+                    left_min_s = lanes[0][k][8];
+                }
+            }
+            if (is_right_lane_free) {
+                if (is_left_lane_free) {
+                    // choose the one with father car
+                    if (left_min_s > right_min_s) {
+                        return 0;
+                    } else {
+                        return 2;
+                    }
+                } else {
+                    return 2;
+                }
             } else {
-                return 2;
+                if (is_left_lane_free) {
+                    return 0;
+                } else {
+                    return 1;
+                }
             }
         case 2:
             // check left lane
             for (int k = 0; k < lanes[1].size(); k++) {
-                if (lanes[1][k][8] < 20 && lanes[1][k][8] > -10) {
+                if (lanes[1][k][8] < safe_front_distance && lanes[1][k][8] > -safe_back_distance) {
                     return lane;
                 }
             }
@@ -217,11 +252,11 @@ int checkLaneChange() {
     }
 }
 
-double getClesestCarSpeed() {
+double getClosestCarSpeed() {
     double dist = 50;
-    double speed = 49.5;
+    double speed = max_speed;
     for (int k = 0; k < lanes[lane].size(); k++) {
-        if (lanes[lane][k][8] < dist && lanes[lane][k][5] < speed) {
+        if (lanes[lane][k][8] < dist) {
             dist = lanes[lane][k][8];
             speed = lanes[lane][k][5];
         }
@@ -362,17 +397,15 @@ int main() {
 
                 // TODO predict where the cars will be in the feature - naive bayes
 
-          	    if (d < (2+4*lane+2) && d > (2+4*lane-2))
+          	    if (d < (4+4*lane) && d > (4*lane))
           	    {
           	        // check s values greater than mine and s gap
-          	        if ((check_car_s > car_s) && (check_car_s-car_s) < 30)
+          	        if ((check_car_s > car_s) && (check_car_s-car_s) < safe_front_distance)
           	        {
           	            // do some logic here, lower reference velocity so we dont crash into the car infront of us, could
           	            // also flag to try to change lanes
-          	            //ref_vel = 29.5; // mph
           	            too_close = true;
           	        }
-
           	    }
           	}
 
@@ -384,24 +417,41 @@ int main() {
                 cout << endl;
             }
 
-          	if (too_close)
-          	{
-                //if (current_state == "KL") {
-                    int possible_lane = checkLaneChange();
-                    if (possible_lane != lane) {
-                        lane = possible_lane;
-                        current_state = possible_lane > lane ? "LCR" : "LCL";
-                    }
-                    // ref_vel = getClesestCarSpeed();
-                //}
-                ref_vel -= 0.224;
-          	}
-          	else if(ref_vel < 49.5)
-          	{
-                ref_vel += .224;
+            cout << "Current state: " << current_state << endl;
+
+            if (current_state == "LCR" || current_state == "LCL") {
+          	    if (remaining_maneuver_steps > 0) {
+                    remaining_maneuver_steps--;
+          	    } else {
+                    current_state = "KL";
+          	    }
           	}
 
-          	// TODO change current_state = "KL" after finishing maneuver
+            if (current_state == "KL") {
+                if (too_close) {
+                    int possible_lane = checkLaneChange();
+                    if (possible_lane != lane) {
+                        from_lane = lane;
+                        to_lane = possible_lane;
+                        lane = possible_lane;
+                        cout << "Changing from lane " << from_lane << " to lane " << to_lane;
+                        current_state = possible_lane > lane ? "LCR" : "LCL";
+                        remaining_maneuver_steps = number_of_steps;
+                    } else {
+                        target_speed = getClosestCarSpeed();
+                        cout << "Target speed " << target_speed << ", ref speed " << ref_vel;
+                        if (ref_vel > target_speed) {
+                            ref_vel -= max_accel;
+                        }
+                    }
+                }
+                else if(ref_vel < max_speed)
+                {
+                    ref_vel += max_accel;
+                }
+
+            }
+
 
           	// Create a list of widely spaced (x,y) waypoints, evenly spaced at 30m
           	// later we will interpolate these waypoints with a spline and fill it in with more points that control
@@ -491,15 +541,15 @@ int main() {
             }
 
             // calculate how to break up spline points so that we travel at our desired reference velocity
-            double target_x = 30.0;
+            double target_x = safe_front_distance;
             double target_y = s(target_x);
             double target_dist = sqrt(target_x*target_x+target_y*target_y);
 
-            double  x_add_on = 0;
+            double x_add_on = 0;
 
             // fill up the rest of our path planner after filling it with previous points, here we will always output 50 points
 
-            for (int i=0; i<=50-previous_path_x.size(); i++)
+            for (int i=0; i<=number_of_steps-previous_path_x.size(); i++)
             {
                 double N = target_dist/(sampling_N*ref_vel/2.24);
                 double x_point = x_add_on+target_x/N;
